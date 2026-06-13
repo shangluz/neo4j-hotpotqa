@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>基于Neo4j数据库的数据管理</title>
+  <script src="https://unpkg.com/cytoscape@3.25.0/dist/cytoscape.min.js"></script>
+  <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 12px; }
+    .topbar { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+    input[type="text"] { width:520px; padding:6px; border-radius:4px; border:1px solid #ccc; }
+    button { padding:6px 10px; margin-left:6px; border-radius:4px; }
+    #container { display:flex; gap:12px; }
+    #cywrap { flex:1; border:1px solid #ddd; background:#f7fbf9; padding:8px; }
+    #cy { width:100%; height:75vh; background: #fbfdfc; }
+    #panel { width:360px; border:1px solid #eee; padding:8px; background:#fff; height:75vh; overflow:auto; }
+    #panel h4 { margin-top:0; }
+    .status { margin-left:12px; color:#666; }
+    .controls-right { margin-left:auto; display:flex; align-items:center; gap:8px; }
+    .small { font-size: 12px; color: #666; }
+    label.inline { display:inline-flex; align-items:center; gap:6px; }
+  </style>
+</head>
+<body>
+  <h3>基于Neo4j数据库的数据管理</h3>
+
+  <div class="topbar">
+    <input id="query" type="text" placeholder="输入查询文本" />
+    <button id="searchBtn">搜索并可视化</button>
+    <label class="inline">hops:
+      <select id="hops">
+        <option value="1">1</option>
+        <option value="2" selected>2</option>
+        <option value="3">3</option>
+      </select>
+    </label>
+
+    <label class="inline">聚类 n:
+      <input id="nclusters" type="number" min="2" max="12" value="3" style="width:60px; margin-left:6px;" />
+    </label>
+    <button id="clusterBtn">聚类当前段落</button>
+
+    <div class="controls-right">
+      <button id="fitBtn">重置视图</button>
+      <span class="status" id="status">就绪</span>
+    </div>
+  </div>
+
+  <div id="container">
+    <div id="cywrap">
+      <div id="cy"></div>
+    </div>
+    <div id="panel">
+      <h4>节点详情</h4>
+      <div id="detail">点击图中节点查看详情。</div>
+      <div style="margin-top:12px;">
+        <b>当前段落：</b> <span id="currentParagraph" class="small">未选择</span>
+      </div>
+      <div style="margin-top:8px;">
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const detailEl = document.getElementById('detail');
+    const currentParagraphEl = document.getElementById('currentParagraph');
+    let currentParagraphTitle = null;
+    let currentParagraphId = null;
+
+    const cy = cytoscape({
+      container: document.getElementById('cy'),
+      elements: [],
+      style: [
+        {
+          selector: 'node[data(type) = "Paragraph"]',
+          style: {
+            'background-color': '#FFD166',
+            'label': 'data(label)',
+            'shape': 'roundrectangle',
+            'width': 'label',
+            'height': 30,
+            'padding': 6,
+            'text-valign': 'center',
+            'font-size': 11,
+            'text-wrap': 'wrap',
+            'text-max-width': 160,
+            'color': '#222'
+          }
+        },
+        {
+          selector: 'node[data(type) = "Sentence"]',
+          style: {
+            'background-color': '#06D6A0',
+            'label': 'data(label)',
+            'shape': 'ellipse',
+            'width': 'label',
+            'height': 26,
+            'padding': 6,
+            'font-size': 10,
+            'text-wrap': 'wrap',
+            'text-max-width': 140,
+            'color': '#fff'
+          }
+        },
+        {
+          selector: 'node[data(seed) = "true"]',
+          style: {
+            'background-color': '#118AB2',
+            'border-color': '#073b4c',
+            'border-width': 2,
+            'color': '#fff'
+          }
+        },
+        {
+          selector: 'edge',
+          style: {
+            'line-color': '#888',
+            'target-arrow-color': '#888',
+            'target-arrow-shape': 'triangle',
+            'arrow-scale': 0.6,
+            'curve-style': 'bezier',
+            'width': 2
+          }
+        }
+      ],
+      layout: {
+        name: 'cose',
+        animate: true,
+        animationDuration: 1000,
+        componentSpacing: 40,
+        nodeRepulsion: 4000,
+        idealEdgeLength: 80,
+        nodeOverlap: 8
+      },
+      wheelSensitivity: 0.2
+    });
+
+    document.getElementById('fitBtn').addEventListener('click', ()=> cy.fit(20));
+
+    function escapeHtml(s){
+      if(!s) return '';
+      return s.replace(/[&<>"']/g, function(m){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[m]; });
+    }
+    const palette = ['#f94144','#f3722c','#f8961e','#f9c74f','#90be6d','#43aa8b','#4d908e','#577590','#277da1','#7209b7','#8d99ae','#2b2d42'];
+    function shadeColor(hex, lum) {
+      hex = String(hex).replace(/[^0-9a-f]/gi, '');
+      if (hex.length < 6) {
+        hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
+      }
+      let rgb = "#", c;
+      for (let i=0;i<3;i++){
+        c = parseInt(hex.substr(i*2,2), 16);
+        c = Math.round(Math.min(Math.max(0, c * lum), 255)).toString(16);
+        rgb += ("00"+c).substr(c.length);
+      }
+      return rgb;
+    }
+
+    function applyClusterColors(){
+      const nodes = cy.nodes();
+      const clusterSet = new Set();
+      nodes.forEach(n => {
+        const c = n.data('cluster');
+        if (c !== undefined && c !== null) clusterSet.add(String(c));
+      });
+      const clusters = Array.from(clusterSet).sort();
+      const colorMap = {};
+      clusters.forEach((c, idx) => {
+        colorMap[c] = palette[idx % palette.length];
+      });
+      nodes.forEach(n => {
+        const c = n.data('cluster');
+        if (n.data('seed') === "true") {
+          n.style('background-color', '#118AB2');
+          n.style('border-color', '#073b4c');
+          n.style('color', '#fff');
+        } else if (c !== undefined && c !== null) {
+          const col = colorMap[String(c)];
+          if (n.data('type') === 'Sentence') {
+            n.style('background-color', col);
+            n.style('color', '#fff');
+          } else {
+            n.style('background-color', shadeColor(col, 0.88));
+            n.style('color', '#222');
+          }
+        } else {
+          if (n.data('type') === 'Sentence') {
+            n.style('background-color', '#06D6A0');
+            n.style('color', '#fff');
+          } else {
+            n.style('background-color', '#FFD166');
+            n.style('color', '#222');
+          }
+        }
+      });
+    }
+
+    function buildElements(apiData) {
+      const elements = [];
+      const seedSet = new Set(apiData.seed_ids || []);
+      apiData.nodes.forEach(n => {
+        let label = n.type === 'Sentence' ? (n.text || '') : (n.title || n.id);
+        if (typeof label === 'string' && label.length > 140) label = label.slice(0,137) + '...';
+        const data = { id: n.id, label: label, type: n.type };
+        if (n.cluster !== undefined && n.cluster !== null) data.cluster = n.cluster;
+        if (seedSet.has(n.id)) data.seed = "true";
+        elements.push({ data: data });
+      });
+      apiData.edges.forEach(e => {
+        elements.push({ data: { id: `${e.source}_${e.target}`, source: e.source, target: e.target, label: e.type } });
+      });
+      return elements;
+    }
+
+    cy.on('tap', 'node', function(evt){
+      const node = evt.target;
+      const id = node.id();
+      const el = node.data();
+      if (el.type === 'Sentence') {
+        axios.get('/api/sentence', { params: { id: id } }).then(r => {
+          const payload = r.data;
+          detailEl.innerHTML = `<b>Sentence</b><div style="margin-top:8px;white-space:pre-wrap;">${escapeHtml(payload.text)}</div>`;
+          currentParagraphTitle = null;
+          currentParagraphId = null;
+          currentParagraphEl.textContent = "未选择";
+        }).catch(() => {
+          detailEl.innerHTML = `<b>Sentence</b><div style="margin-top:8px;">${escapeHtml(el.label)}</div>`;
+          currentParagraphTitle = null;
+          currentParagraphId = null;
+          currentParagraphEl.textContent = "未选择";
+        });
+      } else {
+        axios.get('/api/paragraph', { params: { id: id } }).then(r => {
+          const p = r.data;
+          detailEl.innerHTML = `<b>Paragraph</b><div style="margin-top:8px;"><b>Title:</b> ${escapeHtml(p.title)}</div><div style="margin-top:8px;white-space:pre-wrap;">${escapeHtml(p.text)}</div>`;
+          currentParagraphTitle = p.title || null;
+          currentParagraphId = p.id || null;
+          currentParagraphEl.textContent = `${currentParagraphTitle || currentParagraphId || '（无）'}`;
+        }).catch(() => {
+          detailEl.innerHTML = `<b>Paragraph</b><div style="margin-top:8px;">${escapeHtml(el.label)}</div>`;
+          currentParagraphTitle = el.label || null;
+          currentParagraphId = null;
+          currentParagraphEl.textContent = `${currentParagraphTitle || '（无）'}`;
+        });
+      }
+    });
+
+    async function searchAndShow(){
+      const q = document.getElementById('query').value.trim();
+      if (!q) { alert('请输入查询文本'); return; }
+      const hops = document.getElementById('hops').value || 2;
+      statusEl.textContent = '检索中';
+      try {
+        const resp = await axios.get('/api/multihop', { params: { q: q, top_k: 3, hops: hops } });
+        const data = resp.data;
+        statusEl.textContent = `返回 ${data.nodes.length} 节点，${data.edges.length} 边`;
+        const elements = buildElements(data);
+        cy.elements().remove();
+        cy.add(elements);
+        cy.layout({
+          name: 'cose',
+          animate: true,
+          animationDuration: 800,
+          componentSpacing: 40,
+          nodeRepulsion: 4000,
+          idealEdgeLength: 80,
+          nodeOverlap: 8
+        }).run();
+        cy.fit(20);
+        applyClusterColors();
+        detailEl.innerHTML = '<i>点击节点查看详情</i>';
+      } catch(err){
+        console.error(err);
+        statusEl.textContent = '检索出错: ' + (err.message || err);
+      }
+    }
+
+    document.getElementById('searchBtn').addEventListener('click', searchAndShow);
+
+    document.getElementById('clusterBtn').addEventListener('click', async () => {
+      if (!currentParagraphTitle && !currentParagraphId) {
+        alert('请先点击图中的一个 Paragraph 节点以选定要聚类的段落');
+        return;
+      }
+      const nclusters = parseInt(document.getElementById('nclusters').value) || 3;
+      statusEl.textContent = '聚类中';
+      try {
+        const payload = {};
+        if (currentParagraphId) {
+          payload.paragraph_id = currentParagraphId;
+        } else {
+          payload.paragraph_title = currentParagraphTitle;
+        }
+        payload.n_clusters = nclusters;
+        await axios.post('/api/cluster', payload);
+        await searchAndShow();
+        statusEl.textContent = '聚类完成，图已刷新';
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = '聚类出错: ' + (err.message || err);
+      }
+    });
+  </script>
+</body>
+</html>
